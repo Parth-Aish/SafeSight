@@ -5,7 +5,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.5.0 # Lowered slightly to ensure compatibility
+  sdk: ^3.5.0
 
 dependencies:
   flutter:
@@ -21,21 +21,74 @@ dependencies:
   # Fonts
   google_fonts: ^6.1.0
   
-  # Firebase & Auth (GOLDEN STABLE VERSIONS)
-  # These versions are 100% compatible and stable.
-  firebase_core: ^2.27.0
-  firebase_auth: ^4.17.9
+  # Firebase & Auth
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.4
   google_sign_in: ^6.2.1
+
+  # Mapping (flutter_map kept during MapLibre migration)
   flutter_map: ^8.2.2
   latlong2: ^0.9.1
+
+  # Location & Network
   geolocator: ^12.0.0
+  connectivity_plus: ^6.0.0
   http: ^1.6.0
+  uuid: ^4.5.1
   url_launcher: ^6.3.2
+  shared_preferences: ^2.5.4
+  flutter_secure_storage: ^9.2.2
+  share_plus: ^10.0.0
+  xml: ^6.6.1
+  flutter_contacts: ^1.1.9+2
+  audioplayers: ^6.5.1
+  permission_handler: ^12.0.1
+  flutter_local_notifications: ^17.1.2
+  flutter_background_service: ^5.0.5
+  sensors_plus: ^6.1.1
+  
+  # Hardware / Media
+  record: any
+  path_provider: ^2.1.2
+  speech_to_text: ^7.0.0
+  perfect_volume_control: ^1.0.6
+  audio_session: ^0.2.2
+
+  # Camera & Evidence Capture
+  camera: ^0.11.0+2
+
+  # AI Risk Scoring (Gemini 1.5 Flash)
+  google_generative_ai: ^0.4.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.1
+
+# APP ICON CONFIGURATION
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/logo.png"
+  min_sdk_android: 21
+
+# SPLASH SCREEN CONFIGURATION
+flutter_native_splash:
+  color: "#020617"
+  image: "assets/logo.png"
+  android: true
+  ios: true
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/audio/
+    - assets/models/
+
+dependency_overrides:
+  record: any
+  record_linux: any
+  record_platform_interface: any

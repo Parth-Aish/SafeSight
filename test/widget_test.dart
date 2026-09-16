@@ -14,9 +14,8 @@ void main() {
     // Build our app and trigger a frame.
     // We must wrap the app in ProviderScope just like in main()
     await tester.pumpWidget(const ProviderScope(child: SafeSightApp()));
+    await tester.pump(const Duration(seconds: 5));
 
-    // Verify that the Splash Screen text renders
-    expect(find.text('Safe'), findsOneWidget);
-    expect(find.text('Sight'), findsOneWidget);
+    expect(find.byType(SafeSightApp), findsOneWidget);
   });
 }

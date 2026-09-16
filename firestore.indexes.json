@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "active_alerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "guardianEmails", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "timestamp", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

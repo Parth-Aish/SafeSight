@@ -7,7 +7,9 @@ import 'package:latlong2/latlong.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
-import 'package:url_launcher/url_launcher.dart'; // REQUIRED: flutter pub add url_launcher
+import 'package:url_launcher/url_launcher.dart';
+import '../../../core/utils/global_cache.dart'; // <--- CHANGE IMPORT FROM 'home_screen.dart' TO THIS
+import '../../../services/incident_repository.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -16,7 +18,8 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixin {
+class _MapScreenState extends State<MapScreen>
+    with AutomaticKeepAliveClientMixin {
   final MapController _mapController = MapController();
   late PageController _pageController;
 
@@ -25,23 +28,29 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
   // ---------------------------------------------------------------------------
   static LatLng? _cachedPosition;
   static List<MarkerData>? _cachedMarkerData;
-  static int _selectedCardIndex = 0; 
+  static int _selectedCardIndex = 0;
 
   // State
-  LatLng _currentPosition = const LatLng(30.7333, 76.7794); 
+  LatLng _currentPosition = const LatLng(30.7333, 76.7794);
   bool _isLoading = true;
   List<Marker> _markers = [];
   List<Polyline> _polylines = [];
   bool _isMapReady = false;
   LatLng? _activeDestination; // To track the active route destination
+  StreamSubscription<List<CommunityIncident>>? _incidentSubscription;
+  List<CommunityIncident> _incidents = [];
+  String? _incidentError;
 
   @override
-  bool get wantKeepAlive => true; // Forces Flutter to NEVER destroy this tab's memory
+  bool get wantKeepAlive =>
+      true; // Forces Flutter to NEVER destroy this tab's memory
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController(viewportFraction: 0.85, initialPage: _selectedCardIndex);
+    _pageController =
+        PageController(viewportFraction: 0.85, initialPage: _selectedCardIndex);
+    _listenToIncidents();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_cachedPosition != null && _cachedMarkerData != null) {
@@ -57,7 +66,26 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
   @override
   void dispose() {
     _pageController.dispose();
+    _incidentSubscription?.cancel();
     super.dispose();
+  }
+
+  void _listenToIncidents() {
+    _incidentSubscription = IncidentRepository().watchIncidents().listen(
+      (incidents) {
+        if (!mounted) return;
+        setState(() {
+          _incidents = incidents;
+          _incidentError = null;
+        });
+        _updateMarkers();
+      },
+      onError: (_) {
+        if (!mounted) return;
+        setState(() => _incidentError = 'Community alerts are unavailable offline.');
+        _updateMarkers();
+      },
+    );
   }
 
   void _onMapReady() {
@@ -90,7 +118,7 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
       _showErrorSnackBar("Location permissions permanently denied.");
       return false;
     }
-    
+
     return true;
   }
 
@@ -119,7 +147,8 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
       );
 
       LatLng freshPos = LatLng(fresh.latitude, fresh.longitude);
-      double dist = const Distance().as(LengthUnit.Meter, _currentPosition, freshPos);
+      double dist =
+          const Distance().as(LengthUnit.Meter, _currentPosition, freshPos);
 
       if (dist > 100 || _cachedMarkerData == null) {
         _currentPosition = freshPos;
@@ -146,13 +175,13 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
 
     try {
       Position fresh = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high, 
+        desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 10),
       );
-      
+
       _currentPosition = LatLng(fresh.latitude, fresh.longitude);
       if (_isMapReady) _mapController.move(_currentPosition, 14.5);
-      
+
       await _fetchRealSafeZones(_currentPosition);
     } catch (e) {
       _showErrorSnackBar("Could not establish a precise GPS connection.");
@@ -166,37 +195,66 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
   // ---------------------------------------------------------------------------
   Future<void> _fetchRealSafeZones(LatLng center) async {
     try {
-      final String overpassUrl = 
-          'https://overpass-api.de/api/interpreter?data=[out:json][timeout:15];'
-          '('
-          'node["amenity"~"police|hospital|pharmacy|cafe|fast_food|marketplace|public_building"](around:2500,${center.latitude},${center.longitude});'
-          'way["shop"~"mall"](around:2500,${center.latitude},${center.longitude});'
-          ');'
+      // FIX: Simplified the query, reduced radius to 1500m (less data = less chance of timeout)
+      // and increased timeout to 25 seconds.
+      final query = '[out:json][timeout:25];'
+          '(node["amenity"~"police|hospital|pharmacy"](around:1500,${center.latitude},${center.longitude});'
+          'way["amenity"="hospital"](around:1500,${center.latitude},${center.longitude}););'
           'out center;';
 
-      final response = await http.get(Uri.parse(overpassUrl));
+      final response = await http.get(
+          Uri.https('overpass-api.de', '/api/interpreter', {'data': query}),
+          headers: const {
+            'User-Agent': 'SafeSight/1.0'
+          }).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200) {
-        final List<MarkerData> markerDataList = await compute(_parseOverpassResponse, {
+        final List<MarkerData> markerDataList =
+            await compute(_parseOverpassResponse, {
           'body': response.body,
           'centerLat': center.latitude,
           'centerLng': center.longitude,
         });
 
+        GlobalMapCache.cachedZones = markerDataList;
+
         _cachedPosition = center;
         _cachedMarkerData = markerDataList;
-        _selectedCardIndex = markerDataList.isNotEmpty ? 0 : -1; 
+        _selectedCardIndex = markerDataList.isNotEmpty ? 0 : -1;
 
         if (mounted) {
           _buildMarkersFromData(markerDataList, center);
-          
+
           if (_pageController.hasClients && markerDataList.isNotEmpty) {
             _pageController.jumpToPage(0);
           }
         }
+      } else {
+        debugPrint("Overpass API returned HTTP ${response.statusCode}");
+        _loadFallbackZones(center);
       }
     } catch (e) {
-      debugPrint("API Error: $e");
+      debugPrint("API Error or Timeout: $e");
+      _loadFallbackZones(center);
+    }
+  }
+
+  // Ensure Fallback is robust
+  void _loadFallbackZones(LatLng center) {
+    const fallback = <MarkerData>[];
+
+    GlobalMapCache.cachedZones = fallback;
+    _cachedPosition = center;
+    _cachedMarkerData = fallback;
+    _selectedCardIndex = -1;
+
+    if (mounted) {
+      _buildMarkersFromData(fallback, center);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              "No verified emergency centers found. Try again when online.",
+              style: TextStyle(color: Colors.white)),
+          backgroundColor: Color(0xFFEAB308)));
     }
   }
 
@@ -206,7 +264,7 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
 
   void _updateMarkers() {
     if (_cachedMarkerData == null) return;
-    
+
     final List<Marker> newMarkers = [];
 
     // User Marker
@@ -222,7 +280,8 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
             color: const Color(0xFF38BDF8).withValues(alpha: 0.3),
             shape: BoxShape.circle,
           ),
-          child: const Icon(Icons.my_location, color: Color(0xFF38BDF8), size: 28),
+          child:
+              const Icon(Icons.my_location, color: Color(0xFF38BDF8), size: 28),
         ),
       ),
     );
@@ -243,12 +302,46 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: isSelected ? data.color : const Color(0xFF1E293B), 
+                color: isSelected ? data.color : const Color(0xFF1E293B),
                 shape: BoxShape.circle,
-                border: Border.all(color: isSelected ? Colors.white : data.color, width: isSelected ? 3 : 2),
-                boxShadow: isSelected ? [BoxShadow(color: data.color.withValues(alpha: 0.5), blurRadius: 10)] : [],
+                border: Border.all(
+                    color: isSelected ? Colors.white : data.color,
+                    width: isSelected ? 3 : 2),
+                boxShadow: isSelected
+                    ? [
+                        BoxShadow(
+                            color: data.color.withValues(alpha: 0.5),
+                            blurRadius: 10)
+                      ]
+                    : [],
               ),
-              child: Icon(data.icon, color: isSelected ? Colors.white : data.color, size: isSelected ? 24 : 18),
+              child: Icon(data.icon,
+                  color: isSelected ? Colors.white : data.color,
+                  size: isSelected ? 24 : 18),
+            ),
+          ),
+        ),
+      );
+    }
+
+    for (final incident in _incidents) {
+      final color = _incidentColor(incident.type);
+      newMarkers.add(
+        Marker(
+          key: ValueKey('incident_${incident.id}'),
+          point: incident.position,
+          width: 42,
+          height: 42,
+          child: GestureDetector(
+            onTap: () => _showErrorSnackBar('${incident.type} reported nearby.'),
+            child: Container(
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 8)],
+              ),
+              child: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 22),
             ),
           ),
         ),
@@ -262,8 +355,8 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
 
   void _onMarkerTapped(int index) {
     setState(() => _selectedCardIndex = index);
-    _updateMarkers(); 
-    
+    _updateMarkers();
+
     if (_pageController.hasClients) {
       _pageController.animateToPage(
         index,
@@ -275,16 +368,16 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
   }
 
   // ---------------------------------------------------------------------------
-  // 3. GOOGLE MAPS INTEGRATION & ROUTING
+  // 3. OPENSTREETMAP ROUTING
   // ---------------------------------------------------------------------------
-  Future<void> _launchGoogleMaps(LatLng destination) async {
-    final Uri googleMapsUrl = Uri.parse(
-      'https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}&travelmode=driving'
-    );
-    
+  Future<void> _launchOpenStreetMap(LatLng destination) async {
+    final Uri openStreetMapUrl = Uri.parse(
+        'https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${_currentPosition.latitude},${_currentPosition.longitude};${destination.latitude},${destination.longitude}');
+
     try {
-      if (!await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication)) {
-        _showErrorSnackBar("Could not open Google Maps.");
+      if (!await launchUrl(openStreetMapUrl,
+          mode: LaunchMode.externalApplication)) {
+        _showErrorSnackBar("Could not open OpenStreetMap directions.");
       }
     } catch (e) {
       debugPrint("Error launching Maps: $e");
@@ -296,17 +389,16 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
     setState(() => _isLoading = true);
 
     try {
-      final url = Uri.parse(
-        'https://router.project-osrm.org/route/v1/driving/'
-        '${_currentPosition.longitude},${_currentPosition.latitude};'
-        '${destination.longitude},${destination.latitude}'
-        '?overview=full&geometries=geojson'
-      );
+      final url = Uri.parse('https://router.project-osrm.org/route/v1/driving/'
+          '${_currentPosition.longitude},${_currentPosition.latitude};'
+          '${destination.longitude},${destination.latitude}'
+          '?overview=full&geometries=geojson');
 
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final List<LatLng> routePoints = await compute(_parseRouteResponse, response.body);
+        final List<LatLng> routePoints =
+            await compute(_parseRouteResponse, response.body);
 
         if (mounted) {
           setState(() {
@@ -319,11 +411,12 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
             ];
             _activeDestination = destination;
           });
-          
+
           if (_isMapReady) {
             final bounds = LatLngBounds.fromPoints(routePoints);
             _mapController.fitCamera(
-              CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)),
+              CameraFit.bounds(
+                  bounds: bounds, padding: const EdgeInsets.all(50)),
             );
           }
         }
@@ -350,12 +443,28 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
     );
   }
 
+  Color _incidentColor(String type) {
+    switch (type) {
+      case 'Fire':
+        return const Color(0xFFF97316);
+      case 'Flood':
+        return const Color(0xFF38BDF8);
+      case 'Road Hazard':
+        return const Color(0xFFEAB308);
+      case 'Emergency':
+        return const Color(0xFFEF4444);
+      default:
+        return const Color(0xFFF43F5E);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context); // Required for AutomaticKeepAliveClientMixin
 
     final double topPadding = MediaQuery.of(context).padding.top + 16;
-    final bool hasData = _cachedMarkerData != null && _cachedMarkerData!.isNotEmpty;
+    final bool hasData =
+        _cachedMarkerData != null && _cachedMarkerData!.isNotEmpty;
 
     return Scaffold(
       body: Stack(
@@ -365,18 +474,29 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
             options: MapOptions(
               initialCenter: _currentPosition,
               initialZoom: 14.5,
-              minZoom: 4.0, 
-              maxZoom: 18.0, 
+              minZoom: 4.0,
+              maxZoom: 18.0,
               onMapReady: _onMapReady,
               interactionOptions: const InteractionOptions(
-                flags: InteractiveFlag.drag | InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
+                flags: InteractiveFlag.drag |
+                    InteractiveFlag.pinchZoom |
+                    InteractiveFlag.doubleTapZoom,
               ),
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-                subdomains: const ['a', 'b', 'c', 'd'],
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.safesight',
+              ),
+              RichAttributionWidget(
+                attributions: [
+                  TextSourceAttribution(
+                    'OpenStreetMap contributors',
+                    onTap: () => launchUrl(
+                      Uri.parse('https://www.openstreetmap.org/copyright'),
+                    ),
+                  ),
+                ],
               ),
               CircleLayer(
                 circles: [
@@ -386,7 +506,7 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
                     borderColor: const Color(0xFF38BDF8).withValues(alpha: 0.5),
                     borderStrokeWidth: 2,
                     useRadiusInMeter: true,
-                    radius: 2500, 
+                    radius: 2500,
                   ),
                 ],
               ),
@@ -394,24 +514,28 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
               MarkerLayer(markers: _markers),
             ],
           ),
-          
-          // SEARCH BAR 
+
+          // SEARCH BAR
           Positioned(
-            top: topPadding, 
-            left: 20, 
+            top: topPadding,
+            left: 20,
             right: 20,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E293B).withValues(alpha: 0.95),
                 borderRadius: BorderRadius.circular(30),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 10)
+                ],
               ),
               child: Row(
                 children: [
                   const Icon(Icons.search, color: Colors.white54),
                   const SizedBox(width: 12),
-                  Expanded(child: Text("Search Safe Zones...", style: GoogleFonts.outfit(color: Colors.white54))),
+                  Expanded(
+                      child: Text("Search Safe Zones...",
+                          style: GoogleFonts.outfit(color: Colors.white54))),
                 ],
               ),
             ),
@@ -421,36 +545,50 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
           if (_polylines.isNotEmpty)
             Positioned(
               top: topPadding + 60,
-              left: 0, right: 0,
+              left: 0,
+              right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFF34D399),
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black26, blurRadius: 10)
+                    ],
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.route, color: Color(0xFF0F172A), size: 16),
+                      const Icon(Icons.route,
+                          color: Color(0xFF0F172A), size: 16),
                       const SizedBox(width: 8),
-                      Text("Route Preview", style: GoogleFonts.outfit(color: const Color(0xFF0F172A), fontWeight: FontWeight.bold)),
+                      Text("Route Preview",
+                          style: GoogleFonts.outfit(
+                              color: const Color(0xFF0F172A),
+                              fontWeight: FontWeight.bold)),
                       if (_activeDestination != null) ...[
                         const SizedBox(width: 12),
                         GestureDetector(
-                          onTap: () => _launchGoogleMaps(_activeDestination!),
+                          onTap: () => _launchOpenStreetMap(_activeDestination!),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
                             decoration: BoxDecoration(
                               color: const Color(0xFF0F172A),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Row(
                               children: [
-                                const Icon(Icons.navigation, color: Color(0xFF34D399), size: 12),
+                                const Icon(Icons.navigation,
+                                    color: Color(0xFF34D399), size: 12),
                                 const SizedBox(width: 4),
-                                Text("GO", style: GoogleFonts.outfit(color: const Color(0xFF34D399), fontWeight: FontWeight.bold, fontSize: 12)),
+                                Text("OPEN",
+                                    style: GoogleFonts.outfit(
+                                        color: const Color(0xFF34D399),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12)),
                               ],
                             ),
                           ),
@@ -459,7 +597,8 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
                       const SizedBox(width: 12),
                       GestureDetector(
                         onTap: _cancelNavigation,
-                        child: const Icon(Icons.cancel, color: Color(0xFF0F172A), size: 22),
+                        child: const Icon(Icons.cancel,
+                            color: Color(0xFF0F172A), size: 22),
                       ),
                     ],
                   ),
@@ -467,7 +606,7 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
               ),
             ),
 
-          // HORIZONTAL CARDS VIEWER 
+          // HORIZONTAL CARDS VIEWER
           if (hasData)
             Positioned(
               bottom: 100,
@@ -478,104 +617,142 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
                 controller: _pageController,
                 onPageChanged: (index) {
                   setState(() => _selectedCardIndex = index);
-                  _updateMarkers(); 
+                  _updateMarkers();
                   _mapController.move(_cachedMarkerData![index].position, 15.5);
                 },
                 itemCount: _cachedMarkerData!.length,
                 itemBuilder: (context, index) {
                   final data = _cachedMarkerData![index];
                   final isSelected = _selectedCardIndex == index;
-                  
-                  final double distMeters = const Distance().as(LengthUnit.Meter, _currentPosition, data.position);
-                  String distString = distMeters < 1000 
-                      ? "${distMeters.toStringAsFixed(0)} m" 
+
+                  final double distMeters = const Distance()
+                      .as(LengthUnit.Meter, _currentPosition, data.position);
+                  String distString = distMeters < 1000
+                      ? "${distMeters.toStringAsFixed(0)} m"
                       : "${(distMeters / 1000).toStringAsFixed(1)} km";
 
                   return AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     margin: EdgeInsets.symmetric(
-                      horizontal: 8.0, 
-                      vertical: isSelected ? 0 : 10.0, 
+                      horizontal: 8.0,
+                      vertical: isSelected ? 0 : 10.0,
                     ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF1E293B),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: isSelected ? const Color(0xFF38BDF8) : Colors.white.withValues(alpha: 0.05),
+                        color: isSelected
+                            ? const Color(0xFF38BDF8)
+                            : Colors.white.withValues(alpha: 0.05),
                         width: isSelected ? 2 : 1,
                       ),
-                      boxShadow: isSelected 
-                          ? [BoxShadow(color: const Color(0xFF38BDF8).withValues(alpha: 0.2), blurRadius: 15, offset: const Offset(0, 5))]
-                          : const [BoxShadow(color: Colors.black26, blurRadius: 8)],
+                      boxShadow: isSelected
+                          ? [
+                              BoxShadow(
+                                  color: const Color(0xFF38BDF8)
+                                      .withValues(alpha: 0.2),
+                                  blurRadius: 15,
+                                  offset: const Offset(0, 5))
+                            ]
+                          : const [
+                              BoxShadow(color: Colors.black26, blurRadius: 8)
+                            ],
                     ),
                     child: Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                           Row(
-                             children: [
-                               Container(
-                                 padding: const EdgeInsets.all(10),
-                                 decoration: BoxDecoration(
-                                   color: data.color.withValues(alpha: 0.2),
-                                   borderRadius: BorderRadius.circular(12),
-                                 ),
-                                 child: Icon(data.icon, color: data.color, size: 24),
-                               ),
-                               const SizedBox(width: 12),
-                               Expanded(
-                                 child: Column(
-                                   crossAxisAlignment: CrossAxisAlignment.start,
-                                   children: [
-                                     Text(data.name, style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis),
-                                     Text(data.type.toUpperCase(), style: GoogleFonts.outfit(color: Colors.white54, fontSize: 11)),
-                                   ],
-                                 ),
-                               ),
-                               Text(distString, style: GoogleFonts.outfit(color: const Color(0xFF34D399), fontWeight: FontWeight.bold)),
-                             ],
-                           ),
-                           Row(
-                             children: [
-                               Expanded(
-                                 child: SizedBox(
-                                   height: 40,
-                                   child: ElevatedButton.icon(
-                                     onPressed: () => _fetchRoutePath(data.position),
-                                     icon: const Icon(Icons.route, size: 16),
-                                     label: const Text("Show Route", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                                     style: ElevatedButton.styleFrom(
-                                       backgroundColor: const Color(0xFF1E293B),
-                                       foregroundColor: const Color(0xFF38BDF8),
-                                       side: const BorderSide(color: Color(0xFF38BDF8), width: 1.5),
-                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                       elevation: 0,
-                                       padding: EdgeInsets.zero,
-                                     ),
-                                   ),
-                                 ),
-                               ),
-                               const SizedBox(width: 8),
-                               Expanded(
-                                 child: SizedBox(
-                                   height: 40,
-                                   child: ElevatedButton.icon(
-                                     onPressed: () => _launchGoogleMaps(data.position),
-                                     icon: const Icon(Icons.navigation, size: 16),
-                                     label: const Text("Start (Maps)", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                                     style: ElevatedButton.styleFrom(
-                                       backgroundColor: const Color(0xFF38BDF8),
-                                       foregroundColor: const Color(0xFF0F172A),
-                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                       elevation: 0,
-                                       padding: EdgeInsets.zero,
-                                     ),
-                                   ),
-                                 ),
-                               ),
-                             ],
-                           ),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: data.color.withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(data.icon,
+                                    color: data.color, size: 24),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(data.name,
+                                        style: GoogleFonts.outfit(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis),
+                                    Text(data.type.toUpperCase(),
+                                        style: GoogleFonts.outfit(
+                                            color: Colors.white54,
+                                            fontSize: 11)),
+                                  ],
+                                ),
+                              ),
+                              Text(distString,
+                                  style: GoogleFonts.outfit(
+                                      color: const Color(0xFF34D399),
+                                      fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: SizedBox(
+                                  height: 40,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () =>
+                                        _fetchRoutePath(data.position),
+                                    icon: const Icon(Icons.route, size: 16),
+                                    label: const Text("Show Route",
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF1E293B),
+                                      foregroundColor: const Color(0xFF38BDF8),
+                                      side: const BorderSide(
+                                          color: Color(0xFF38BDF8), width: 1.5),
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(10)),
+                                      elevation: 0,
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: SizedBox(
+                                  height: 40,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () =>
+                                        _launchOpenStreetMap(data.position),
+                                    icon:
+                                        const Icon(Icons.navigation, size: 16),
+                                    label: const Text("Open OSM",
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF38BDF8),
+                                      foregroundColor: const Color(0xFF0F172A),
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(10)),
+                                      elevation: 0,
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -584,9 +761,9 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
               ),
             ),
 
-          // RE-CENTER BUTTON 
+          // RE-CENTER BUTTON
           Positioned(
-            bottom: hasData ? 260 : 120, 
+            bottom: hasData ? 260 : 120,
             right: 20,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 300),
@@ -606,20 +783,43 @@ class _MapScreenState extends State<MapScreen> with AutomaticKeepAliveClientMixi
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFF1E293B).withValues(alpha: 0.95),
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black26, blurRadius: 10)
+                    ],
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8))),
+                      const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Color(0xFF38BDF8))),
                       const SizedBox(width: 8),
-                      Text("Updating Location...", style: GoogleFonts.outfit(color: Colors.white, fontSize: 12)),
+                      Text("Updating Location...",
+                          style: GoogleFonts.outfit(
+                              color: Colors.white, fontSize: 12)),
                     ],
                   ),
+                ),
+              ),
+            ),
+          if (_incidentError != null)
+            Positioned(
+              left: 20,
+              right: 20,
+              bottom: hasData ? 260 : 120,
+              child: Material(
+                color: const Color(0xFF7F1D1D),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(_incidentError!, style: const TextStyle(color: Colors.white)),
                 ),
               ),
             ),
@@ -639,7 +839,12 @@ class MarkerData {
   final IconData icon;
   final Color color;
 
-  MarkerData({required this.name, required this.type, required this.position, required this.icon, required this.color});
+  MarkerData(
+      {required this.name,
+      required this.type,
+      required this.position,
+      required this.icon,
+      required this.color});
 }
 
 // Parses JSON from Overpass into Dart objects
@@ -651,15 +856,17 @@ List<MarkerData> _parseOverpassResponse(Map<String, dynamic> params) {
 
   final data = json.decode(body);
   final List elements = data['elements'] ?? [];
-  
+
   elements.sort((a, b) {
     final latA = a['lat'] ?? a['center']?['lat'] ?? 0.0;
     final lonA = a['lon'] ?? a['center']?['lon'] ?? 0.0;
     final latB = b['lat'] ?? b['center']?['lat'] ?? 0.0;
     final lonB = b['lon'] ?? b['center']?['lon'] ?? 0.0;
-    
-    final distA = (latA - center.latitude) * (latA - center.latitude) + (lonA - center.longitude) * (lonA - center.longitude);
-    final distB = (latB - center.latitude) * (latB - center.latitude) + (lonB - center.longitude) * (lonB - center.longitude);
+
+    final distA = (latA - center.latitude) * (latA - center.latitude) +
+        (lonA - center.longitude) * (lonA - center.longitude);
+    final distB = (latB - center.latitude) * (latB - center.latitude) +
+        (lonB - center.longitude) * (lonB - center.longitude);
     return distA.compareTo(distB);
   });
 
@@ -669,12 +876,12 @@ List<MarkerData> _parseOverpassResponse(Map<String, dynamic> params) {
   for (var element in limitedElements) {
     final lat = element['lat'] ?? element['center']?['lat'];
     final lon = element['lon'] ?? element['center']?['lon'];
-    
+
     if (lat == null || lon == null) continue;
 
     final tags = element['tags'] ?? {};
     final name = tags['name'] ?? 'Safe Zone';
-    
+
     final amenity = tags['amenity'];
     final shop = tags['shop'];
     final type = amenity ?? shop ?? 'unknown';
@@ -688,12 +895,14 @@ List<MarkerData> _parseOverpassResponse(Map<String, dynamic> params) {
     } else if (type == 'hospital' || type == 'pharmacy' || type == 'clinic') {
       icon = Icons.local_hospital;
       color = const Color(0xFFF43F5E);
-    } else if (type == 'mall' || type == 'supermarket' || type == 'department_store') {
+    } else if (type == 'mall' ||
+        type == 'supermarket' ||
+        type == 'department_store') {
       icon = Icons.storefront;
-      color = const Color(0xFFA855F7); 
+      color = const Color(0xFFA855F7);
     } else {
-      icon = Icons.local_cafe; 
-      color = const Color(0xFFEAB308); 
+      icon = Icons.local_cafe;
+      color = const Color(0xFFEAB308);
     }
 
     results.add(MarkerData(
