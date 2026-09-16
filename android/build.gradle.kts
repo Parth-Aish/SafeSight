@@ -21,14 +21,14 @@ subprojects {
     fun applyAndroidFixes(proj: Project) {
         val androidExt = proj.extensions.findByName("android")
         if (androidExt != null) {
-            // 1. Force Compile SDK 34 for ALL plugins (Fixes 'lStar' error)
+            // 1. Force Compile SDK 35 for ALL plugins (Fixes 'lStar' error)
             try {
                 val setCompileSdk = androidExt.javaClass.getMethod("setCompileSdkVersion", Int::class.java)
-                setCompileSdk.invoke(androidExt, 34)
+                setCompileSdk.invoke(androidExt, 35)
             } catch (e: Exception) {
                 try {
                     val setCompileSdk2 = androidExt.javaClass.getMethod("setCompileSdk", Int::class.java)
-                    setCompileSdk2.invoke(androidExt, 34)
+                    setCompileSdk2.invoke(androidExt, 35)
                 } catch (e2: Exception) {
                     // Ignore silent failures
                 }
