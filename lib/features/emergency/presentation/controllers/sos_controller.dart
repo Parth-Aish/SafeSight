@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/sos_repository.dart';
 import '../../domain/models/emergency_state.dart';
@@ -120,17 +121,27 @@ class SosController extends Notifier<EmergencyState> {
 
   /// Cancels (or covertly escalates) the emergency based on PIN type.
   ///
-  /// - [PinType.safety]: Genuine cancellation, session resolved.
-  /// - [PinType.duress]: Fake cancellation shown, but session continues
+  /// - safety: Genuine cancellation, session resolved.
+  /// - duress: Fake cancellation shown, but session continues
   ///   with status 'hostage_coerced' and silent guardian notification.
-  /// - [PinType.invalid]: No action, returns false.
   Future<bool> cancelWithPin(String pin, PinType pinType) async {
     if (!state.isActive &&
         state.phase != EmergencyPhase.walkWithMePinChallenge) {
       return false;
     }
 
-    switch (pinType) {
+    final prefs = await SharedPreferences.getInstance();
+    final primaryPin = prefs.getString('primary_pin') ?? '1245';
+    final duressPin = prefs.getString('duress_pin') ?? '9999';
+
+    PinType actualPinType = PinType.invalid;
+    if (pin == primaryPin) {
+      actualPinType = PinType.safety;
+    } else if (pin == duressPin) {
+      actualPinType = PinType.duress;
+    }
+
+    switch (actualPinType) {
       case PinType.safety:
         // Genuine cancellation
         final sessionId = state.sessionId;
@@ -154,7 +165,7 @@ class SosController extends Notifier<EmergencyState> {
               .markCoerced(sessionId);
         }
         state = state.copyWith(
-          phase: EmergencyPhase.coerced,
+          phase: EmergencyPhase.coerced, // Setting to coerced effectively tricks the UI to close the Active SOS screen, but keeps tracking
           changedAt: DateTime.now(),
         );
         debugPrint('🚨 DURESS PIN ENTERED — covert tracking maintained');

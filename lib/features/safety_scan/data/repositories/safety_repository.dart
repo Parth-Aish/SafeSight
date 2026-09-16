@@ -56,7 +56,12 @@ class SafetyRepository {
       latitude: position.latitude,
       longitude: position.longitude,
       city: city,
-      newsHeadlines: headlines.map((h) => h.title).toList(),
+      newsHeadlines: headlines.map((h) => {
+        'headline': h.title,
+        'publisher': h.source,
+        'url': h.link,
+        'publishedDate': h.publishedAt?.toIso8601String() ?? 'Unknown',
+      }).toList(),
       nearbyIncidentCount: incidentCount,
       policeStationCount: policeCount,
       hospitalCount: hospitalCount,
@@ -77,6 +82,7 @@ class SafetyRepository {
       assessedAt: geminiAssessment.assessedAt,
       factors: geminiAssessment.factors,
       aiModelVersion: geminiAssessment.modelVersion,
+      verifiedSources: geminiAssessment.verifiedSources,
     );
   }
 

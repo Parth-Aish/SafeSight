@@ -4,10 +4,11 @@ import 'package:xml/xml.dart';
 class NewsHeadline {
   final String title;
   final String source;
+  final String link;
   final DateTime? publishedAt;
 
   const NewsHeadline(
-      {required this.title, required this.source, this.publishedAt});
+      {required this.title, required this.source, required this.link, this.publishedAt});
 }
 
 class RssNewsDataSource {
@@ -34,10 +35,12 @@ class RssNewsDataSource {
           final title = item.getElement('title')?.innerText.trim() ?? '';
           final source =
               item.getElement('source')?.innerText.trim() ?? 'Google News';
+          final link = item.getElement('link')?.innerText.trim() ?? '';
           final rawDate = item.getElement('pubDate')?.innerText;
           return NewsHeadline(
             title: title,
             source: source,
+            link: link,
             publishedAt: rawDate == null ? null : DateTime.tryParse(rawDate),
           );
         })

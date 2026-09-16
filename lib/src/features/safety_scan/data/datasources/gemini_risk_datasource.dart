@@ -22,11 +22,42 @@ import 'package:http/http.dart' as http;
 // Cached for 15 minutes per geohash-6 cell.
 // ---------------------------------------------------------------------------
 
+class VerifiedSource {
+  final String headline;
+  final String publisher;
+  final String url;
+  final String publishedDate;
+
+  const VerifiedSource({
+    required this.headline,
+    required this.publisher,
+    required this.url,
+    required this.publishedDate,
+  });
+
+  factory VerifiedSource.fromJson(Map<String, dynamic> json) {
+    return VerifiedSource(
+      headline: json['headline'] as String? ?? '',
+      publisher: json['publisher'] as String? ?? '',
+      url: json['url'] as String? ?? '',
+      publishedDate: json['publishedDate'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'headline': headline,
+        'publisher': publisher,
+        'url': url,
+        'publishedDate': publishedDate,
+      };
+}
+
 /// Structured risk assessment from Gemini.
 class GeminiRiskAssessment {
   final double riskIndex; // 0.0 (safe) to 1.0 (critical)
   final String riskLevel; // SAFE, LOW, MODERATE, HIGH, CRITICAL
   final List<RiskFactor> factors;
+  final List<VerifiedSource> verifiedSources;
   final String recommendation;
   final String? modelVersion;
   final DateTime assessedAt;
@@ -35,6 +66,7 @@ class GeminiRiskAssessment {
     required this.riskIndex,
     required this.riskLevel,
     this.factors = const [],
+    this.verifiedSources = const [],
     required this.recommendation,
     this.modelVersion,
     required this.assessedAt,
@@ -54,6 +86,10 @@ class GeminiRiskAssessment {
       riskLevel: json['riskLevel'] as String? ?? 'SAFE',
       factors: (json['factors'] as List<dynamic>?)
               ?.map((f) => RiskFactor.fromJson(f as Map<String, dynamic>))
+              .toList() ??
+          [],
+      verifiedSources: (json['verifiedSources'] as List<dynamic>?)
+              ?.map((s) => VerifiedSource.fromJson(s as Map<String, dynamic>))
               .toList() ??
           [],
       recommendation: json['recommendation'] as String? ??
@@ -115,7 +151,7 @@ class GeminiRiskDatasource {
     required double latitude,
     required double longitude,
     required String city,
-    required List<String> newsHeadlines,
+    required List<Map<String, String>> newsHeadlines,
     required int nearbyIncidentCount,
     required int policeStationCount,
     required int hospitalCount,
@@ -194,13 +230,13 @@ class GeminiRiskDatasource {
 
   String _buildPrompt({
     required String city,
-    required List<String> headlines,
+    required List<Map<String, String>> headlines,
     required int incidents,
     required int police,
     required int hospitals,
     required int hour,
   }) {
-    final headlineBlock = headlines.take(15).join('\n- ');
+    final headlineBlock = headlines.take(15).map((h) => "- [${h['publisher']}] ${h['headline']} (${h['publishedDate']}) URL: ${h['url']}").join('\n');
 
     return '''
 You are a safety risk assessment AI. Analyze the following data about a location and produce a structured risk assessment.
@@ -214,7 +250,7 @@ Nearby Infrastructure:
 Community Incidents (last 7 days within 1.5km): $incidents
 
 Recent News Headlines (last 7 days):
-- $headlineBlock
+$headlineBlock
 
 Rules:
 1. Default to SAFE if there is insufficient data.
@@ -223,6 +259,7 @@ Rules:
 4. More police/hospital infrastructure REDUCES risk.
 5. Late night hours (22:00-05:00) increase risk slightly.
 6. Be conservative — only mark HIGH or CRITICAL with strong evidence.
+7. Always populate the verifiedSources array with the provided headlines.
 
 Produce a JSON response matching the schema exactly.''';
   }
@@ -250,9 +287,22 @@ Produce a JSON response matching the schema exactly.''';
           'required': ['category', 'description', 'weight'],
         },
       },
+      'verifiedSources': {
+        'type': 'array',
+        'items': {
+          'type': 'object',
+          'properties': {
+            'headline': {'type': 'string'},
+            'publisher': {'type': 'string'},
+            'url': {'type': 'string'},
+            'publishedDate': {'type': 'string'},
+          },
+          'required': ['headline', 'publisher', 'url', 'publishedDate'],
+        },
+      },
       'recommendation': {'type': 'string'},
     },
-    'required': ['riskIndex', 'riskLevel', 'factors', 'recommendation'],
+    'required': ['riskIndex', 'riskLevel', 'factors', 'verifiedSources', 'recommendation'],
   };
 
   /// Simple geohash approximation (not a full geohash, but sufficient for caching).

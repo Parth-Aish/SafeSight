@@ -13,6 +13,9 @@ import 'features/profile/presentation/profile_tab.dart';
 // REPLACED OLD IMPORT WITH NEW FEATURE FOLDER IMPORT
 import 'features/map/presentation/map_screen.dart';
 
+import 'features/emergency/presentation/screens/active_sos_screen.dart';
+import 'features/emergency/presentation/controllers/sos_controller.dart';
+import 'features/emergency/domain/models/emergency_state.dart';
 import 'src/features/emergency/presentation/screens/walk_with_me_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -24,6 +27,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _selectedIndex = 0;
+  bool _isSosScreenOpen = false;
 
   // The 3 main tabs of our application
   static const List<Widget> _pages = [
@@ -40,6 +44,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(sosControllerProvider, (previous, next) {
+      final wasActive = previous?.phase == EmergencyPhase.triggered || previous?.phase == EmergencyPhase.broadcasting;
+      final isActive = next.phase == EmergencyPhase.triggered || next.phase == EmergencyPhase.broadcasting;
+
+      if (isActive && !_isSosScreenOpen) {
+        _isSosScreenOpen = true;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => const ActiveSosScreen(),
+            fullscreenDialog: true,
+          ),
+        ).then((_) {
+          _isSosScreenOpen = false;
+        });
+      } else if (!isActive && _isSosScreenOpen) {
+        Navigator.of(context).pop();
+        _isSosScreenOpen = false;
+      }
+    });
+
     return Scaffold(
       backgroundColor: AppTheme.slate900,
       extendBody: true,

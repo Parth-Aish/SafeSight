@@ -11,7 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:math';
-
+import 'package:url_launcher/url_launcher.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/utils/global_cache.dart';
 import '../../../services/safety_service.dart';
 import '../../../shared/widgets/shared_widgets.dart';
@@ -911,10 +912,6 @@ class _DashboardTabState extends ConsumerState<DashboardTab>
                           label: "News",
                           isGood: _newsCount <= 2),
                       _DiagnosticBadge(
-                          icon: Icons.lightbulb_outline,
-                          label: "Lighting",
-                          isGood: _infraCount >= 3),
-                      _DiagnosticBadge(
                           icon: Icons.groups,
                           label: "Crowd",
                           isGood: _crowdCount == 0),
@@ -924,6 +921,10 @@ class _DashboardTabState extends ConsumerState<DashboardTab>
               ],
             ),
           ),
+          if (_assessment != null && _assessment!.verifiedSources.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _NewsSourcesList(sources: _assessment!.verifiedSources),
+          ],
           const SizedBox(height: 40),
           Center(
               child: SOSButton(
@@ -1027,6 +1028,100 @@ class _DiagnosticBadge extends StatelessWidget {
         Text(label,
             style: GoogleFonts.outfit(color: Colors.white70, fontSize: 12)),
       ],
+    );
+  }
+}
+
+class _NewsSourcesList extends StatefulWidget {
+  final List<dynamic> sources;
+
+  const _NewsSourcesList({required this.sources});
+
+  @override
+  State<_NewsSourcesList> createState() => _NewsSourcesListState();
+}
+
+class _NewsSourcesListState extends State<_NewsSourcesList> {
+  bool _expanded = false;
+
+  Future<void> _launchUrl(String urlString) async {
+    final Uri url = Uri.parse(urlString);
+    if (!await launchUrl(url)) {
+      debugPrint('Could not launch $url');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            onTap: () => setState(() => _expanded = !_expanded),
+            leading: const Icon(Icons.article_outlined, color: Color(0xFF38BDF8)),
+            title: Text(
+              "Recent 7-Day Local Reports",
+              style: GoogleFonts.outfit(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            trailing: Icon(
+              _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+              color: Colors.white54,
+            ),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+              child: Column(
+                children: widget.sources.map((source) {
+                  return InkWell(
+                    onTap: () => _launchUrl(source.url),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.link, color: Colors.white38, size: 16),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  source.headline,
+                                  style: GoogleFonts.outfit(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  "${source.publisher} • ${source.publishedDate}",
+                                  style: GoogleFonts.outfit(
+                                    color: Colors.white54,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

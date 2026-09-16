@@ -27,6 +27,9 @@ class SafetyAssessment {
   /// Age of the oldest data point used in this assessment.
   final DateTime? dataFreshness;
 
+  /// Verified news sources returned by Gemini AI.
+  final List<VerifiedSource> verifiedSources;
+
   const SafetyAssessment({
     required this.level,
     required this.confidenceScore,
@@ -41,6 +44,7 @@ class SafetyAssessment {
     this.dataConfidence = 0.5,
     this.aiModelVersion,
     this.dataFreshness,
+    this.verifiedSources = const [],
   });
 
   double get score => switch (level) {
